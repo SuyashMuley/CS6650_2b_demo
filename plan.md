@@ -67,13 +67,13 @@
 
 ## Final deliverables (repo and README)
 
-- [ ] Server code, Dockerfile and infrastructure locations documented
-- [ ] Curl or Postman examples for every response code
-- [ ] Deployment instructions
-- [ ] Locust screenshots
-- [ ] Grafana screenshot, log excerpt and dashboard-vs-logs note
-- [ ] `.gitignore` in place, no secrets or state files committed
-- [ ] Submit: Piazza post by Wed, git repo link by Monday 9am
+- [x] Server code, Dockerfile and infrastructure locations documented
+- [x] Curl or Postman examples for every response code
+- [x] Deployment instructions
+- [x] Locust screenshots
+- [x] Grafana screenshot, log excerpt and dashboard-vs-logs note
+- [x] `.gitignore` in place, no secrets or state files committed
+- [ ] Submit: Piazza post by Wed, git repo link by Monday 9am (repo: https://github.com/SuyashMuley/CS6650_2b_demo, all parts pushed)
 
 ## Interview prep
 
