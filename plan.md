@@ -49,11 +49,11 @@
 
 ## Part IV: Locust testing
 
-- [ ] Reuse the HW3 locustfile against the deployed URL
-- [ ] Run `HttpUser` vs `FastHttpUser`; research and document why they differ
-- [ ] Design a stress test (user counts, spawn rate, request mix) and find where the server struggles
-- [ ] Screenshot all runs, including at least one stress test
-- [ ] Write answers: most common real-world operation (reads) and its effect on the data structure choice
+- [x] Reuse the HW3 locustfile against the deployed URL (`locust/locustfile.py`, smoke test passed: 10 users, 0 failures)
+- [x] Run `HttpUser` vs `FastHttpUser`; research and document why they differ
+- [x] Design a stress test (user counts, spawn rate, request mix) and find where the server struggles
+- [x] Screenshot all runs, including at least one stress test
+- [x] Write answers: most common real-world operation (reads) and its effect on the data structure choice
 
 ## Part V: Observability
 

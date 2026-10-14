@@ -243,7 +243,63 @@ terraform destroy -auto-approve
 
 ## Load testing
 
-_TODO (Part IV)_
+Tool: [Locust](https://locust.io), run from a laptop against the Product API on ECS Fargate (0.25 vCPU, 512 MB, one task, us-east-1).
+Locustfile: `locust/locustfile.py`. Screenshots: `screenshots/`.
+
+Install Locust first: `pip install locust` (a virtual environment is recommended).
+
+"RPS at end of run" is the current requests/second shown in Locust's header when the run stopped, not an average over the run. Throughput peaked a little higher during some runs (for example about 4,000 RPS in the 500-user chart).
+
+```
+cd locust
+# HttpUser (default)
+locust -f locustfile.py -H http://<PUBLIC-IP>:8080
+# FastHttpUser
+LOCUST_CLIENT=fast locust -f locustfile.py -H http://<PUBLIC-IP>:8080
+```
+Optional: `LOCUST_WAIT=1` adds 0.1-0.5 s of think time between requests (default is back-to-back).
+
+### Test design
+- **Request mix (about 8:1:1):** `GET /products/{id}` on seeded products 1-3, `GET` on a missing ID (expected 404, counted as success), and `POST /products/{id}/details` (expected 204). A real store is read-heavy, so most traffic is reads.
+- **Users:** 50 (baseline), 100, 200, 500, 1000. Each level ran about one minute. Spawn rate was 10/s for 50-500 users and 25/s for the 1000-user run.
+- **No wait time:** every user fires back to back, so this measures the server's limit instead of simulating human pacing.
+
+### Results (FastHttpUser)
+
+| Users | Requests | RPS at end of run | Median | p95 | p99 | Max | Failures |
+|---|---|---|---|---|---|---|---|
+| 50 | 151,348 | 2,077 | 23 ms | 31 ms | 46 ms | 312 ms | 0 |
+| 100 | 162,438 | 2,685 | 27 ms | 69 ms | 77 ms | 195 ms | 0 |
+| 200 | 156,695 | 3,118 | 56 ms | 98 ms | 110 ms | 279 ms | 0 |
+| 500 | 219,183 | 3,702 | 91 ms | 190 ms | 240 ms | 471 ms | 0 |
+| 1000 | 205,750 | 4,021 | 180 ms | 370 ms | 480 ms | 1,102 ms | 0 |
+
+Screenshots: `baseline_fasthttpuser.png`, `100user_fasthttp.png`, `fasthttp_200user.png`, `fasthttp_500user.png`, `fasthttp_1000user_25rampup.png`. Each has matching `*_chart.png` / `*_chart2.png` charts. The 1000-user charts show all runs on one timeline.
+
+### Where the server struggled
+- Nothing failed: 0 errors up to 1000 users. The server degraded through latency, not errors.
+- The tail got worse first: going from 50 to 100 users, p95 more than doubled (31 to 69 ms) while the median barely moved.
+- From 200 to 1000 users (5x), throughput rose only 29% (3,118 to 4,021 RPS) while the median went from 56 to 180 ms. Extra users just queue.
+- **Cause: the Fargate task's CPU (0.25 vCPU).** CloudWatch `CPUUtilization` at 1-minute resolution reached 94-100% in every run from 50 users up (for example about 96% around 01:17, during the HttpUser 50-user run, and 99.7% during the 500-user run). Memory peaked at about 6% and the task count stayed at 1, so the task did not crash or restart (`ecs_memoryutilization.png`, `ecs_livetaskcount.png`).
+- Note on `ecs_cpuutilization.png`: the console graph defaults to a 5-minute average and ends before the 1000-user run, so it shows only about 41% at its peak. The short, saturated runs are averaged with idle time. The 1-minute data is what shows the plateau.
+- **Not the client:** during the 1000-user run the Locust process used about 33% of one core (Activity Monitor), so the load generator was not the limit.
+- About 22 ms of every latency is the network round trip from the laptop to AWS.
+
+### Tradeoffs
+- **Most common operation:** reads (`GET /products/{id}`). A shopper browses far more than a merchant updates products.
+- **Effect on the data structure:** a `map` gives O(1) reads. A `sync.RWMutex` lets many GETs run in parallel and serializes only the POSTs, which suits a read-heavy mix. A plain `Mutex` would serialize the reads too, and no lock at all would be a data race (Go maps can crash on concurrent writes).
+- **Limits:** the data lives in one task's memory, so it is lost on restart and cannot be shared across several tasks. A scalable design needs a database and a cache.
+
+### HttpUser vs FastHttpUser (50 users)
+
+| Client | RPS at end of run | Median | p95 | Failures |
+|---|---|---|---|---|
+| HttpUser | 1,859 | 24 ms | 31 ms | 0 |
+| FastHttpUser | 2,077 | 23 ms | 31 ms | 0 |
+
+(`baseline_httpuser.png`, `baseline_fasthttpuser.png`)
+
+FastHttpUser gave about 12% more throughput with the same latency. The difference is small because Locust users are closed-loop: each waits for a response before sending the next request, so throughput is about users divided by latency. Here latency is dominated by the network trip and a CPU-bound server, not by the client. `HttpUser` is built on the Python `requests` library, which does more work per call. `FastHttpUser` uses `geventhttpclient`, a lighter, faster HTTP client, so one Locust process can generate more load before its own CPU becomes the limit. We did not reach that limit at 50 users, so the gap here understates what FastHttpUser can do. The server's CPU limit mattered more than the choice of client.
 
 ## Observability
 
