@@ -337,12 +337,13 @@ docker compose logs app | grep '^app-1  | {'
 Stop everything with `docker compose down`.
 
 ### Dashboard: idle vs loaded
-Locust ran against the local stack (FastHttpUser, back-to-back requests, same request mix as Part IV). The dashboard was idle until about 02:03, then loaded until about 02:06.
+Locust ran against the local stack: FastHttpUser, **200 users at a spawn rate of 10/s**, back-to-back requests, same request mix as Part IV, from about 02:03 to 02:05. The dashboard was idle before that.
 
 - `screenshots/grafana_1.png`: Rate, Errors and Duration panels.
 - `screenshots/grafana_2.png`: Duration (with legend) and responses by status code.
 - `screenshots/part5_locust.png`: the Locust summary for the same run.
 - `screenshots/docker_logs.png`: the request logs.
+- `screenshots/locustlogs_part5.png`: Locust's own log for the run (shows the CPU warning described below).
 
 | | Idle | Loaded |
 |---|---|---|
@@ -354,8 +355,9 @@ Locust ran against the local stack (FastHttpUser, back-to-back requests, same re
 Notes on reading the screenshots:
 - **The earlier blip.** The short bar near 01:53 (66.7% errors, a latency bump) is from a few manual `curl` requests used to check the stack. Two of those three requests were deliberate errors, which is why the percentage is so high. It is not part of the load test.
 - **The 250 us / 475 us lines are flat because of the histogram bucket resolution.** The smallest bucket is 0.5 ms and every request finished inside it, so `histogram_quantile` interpolates inside that one bucket (50% of 0.5 ms = 250 us, 95% = 475 us). The true latency is below 0.5 ms: the log lines show 0.015 to 0.45 ms, and the slowest request of the whole run was 5.8 ms. Finer buckets (for example 50 us and 100 us) would resolve it.
-- **Locust sees 7 ms and the server sees under 0.5 ms** because Locust's number includes the client side: its own processing at about 16K requests per second, the Docker network, and the load generator's CPU. It is not server time.
-- **Local vs AWS:** the local server handled about 16K RPS with a 7 ms median, against about 4K RPS and 180 ms at 1000 users on the 0.25 vCPU Fargate task. The local run has no 22 ms network round trip and uses much more CPU.
+- **The load generator was the bottleneck in this run.** Locust logged `CPU usage above 90%` at 02:03:20 and `CPU usage was too high at some point during the test` at 02:05:10 (`locustlogs_part5.png`). So the 16K RPS is a floor set by one Locust process on a laptop that was also running Docker, not the server's capacity, and Locust warns that it can give inconsistent response times. The server itself was not saturated: its own durations stayed under 0.5 ms (slowest request 5.8 ms).
+- **Locust sees 7 ms and the server sees under 0.5 ms** because Locust's number includes client-side queueing at that CPU load, the Docker network and the load generator's own processing. It is not server time. Locust suggests distributing the load over several CPU cores (for example `--processes`) to remove this limit.
+- **Local vs AWS:** the local server handled at least 16K RPS (limited by Locust, see above) with a 7 ms median, against about 4K RPS and a 180 ms median at 1000 users on the 0.25 vCPU Fargate task. The local run has no 22 ms network round trip, and the Fargate task was CPU-saturated while the local server was not. The two runs used different user counts (200 local, 50 to 1000 on AWS), so they are not a like-for-like comparison.
 
 ### Request log excerpt (same run)
 One JSON object per request, from `docker compose logs app` during the Locust run (`screenshots/docker_logs.png` shows the same lines; the first lines in that screenshot, from 05:52, are manual test requests made before the load run):
