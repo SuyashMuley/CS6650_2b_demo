@@ -1,11 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Product mirrors the Product schema in api.yaml.
@@ -117,9 +123,83 @@ func simulateFailure(c *gin.Context) bool {
 	return c.GetHeader("X-Simulate-Error") == "true"
 }
 
+// RED metrics (Rate, Errors, Duration), labelled by method, route pattern and status.
+// Labelling by the route pattern (/products/:productId) instead of the raw URL
+// keeps the number of label values small.
+var (
+	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total HTTP requests (rate).",
+	}, []string{"method", "endpoint", "status"})
+
+	errorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_request_errors_total",
+		Help: "HTTP requests that returned a non-2xx status (errors).",
+	}, []string{"method", "endpoint", "status"})
+
+	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "http_request_duration_seconds",
+		Help:    "HTTP request latency in seconds (duration).",
+		Buckets: []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+	}, []string{"method", "endpoint"})
+)
+
+// logLine is the one-JSON-object-per-request structure written to stdout.
+type logLine struct {
+	Time       string  `json:"time"`
+	Method     string  `json:"method"`
+	Endpoint   string  `json:"endpoint"`
+	Path       string  `json:"path"`
+	Status     int     `json:"status"`
+	DurationMs float64 `json:"duration_ms"`
+	ClientIP   string  `json:"client_ip"`
+}
+
+// observe records the RED metrics and emits a structured JSON log line for every request.
+func observe() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.URL.Path == "/metrics" {
+			c.Next()
+			return
+		}
+		start := time.Now()
+		c.Next()
+		elapsed := time.Since(start)
+
+		endpoint := c.FullPath()
+		if endpoint == "" {
+			endpoint = "unmatched"
+		}
+		status := c.Writer.Status()
+		code := strconv.Itoa(status)
+
+		requestsTotal.WithLabelValues(c.Request.Method, endpoint, code).Inc()
+		if status < 200 || status > 299 {
+			errorsTotal.WithLabelValues(c.Request.Method, endpoint, code).Inc()
+		}
+		requestDuration.WithLabelValues(c.Request.Method, endpoint).Observe(elapsed.Seconds())
+
+		line, err := json.Marshal(logLine{
+			Time:       start.UTC().Format(time.RFC3339Nano),
+			Method:     c.Request.Method,
+			Endpoint:   endpoint,
+			Path:       c.Request.URL.Path,
+			Status:     status,
+			DurationMs: float64(elapsed.Microseconds()) / 1000,
+			ClientIP:   c.ClientIP(),
+		})
+		if err == nil {
+			os.Stdout.Write(append(line, '\n'))
+		}
+	}
+}
+
 func setupRouter(s *store) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery())
+	// observe is outermost so it still sees the 500 that Recovery writes after a panic.
+	r.Use(observe(), gin.Recovery())
+
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	r.GET("/products/:productId", func(c *gin.Context) {
 		if simulateFailure(c) {

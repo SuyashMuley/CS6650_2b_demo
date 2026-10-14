@@ -57,13 +57,13 @@
 
 ## Part V: Observability
 
-- [ ] Add `prometheus/client_golang`; expose `/metrics`
-- [ ] Request counter (rate), error counter, duration histogram, labelled by endpoint and status
-- [ ] Gin middleware: one JSON log line per request (endpoint, status, duration)
-- [ ] `docker-compose.yml` with app, Prometheus (with config) and Grafana, local only
-- [ ] Grafana dashboard: panels for rate, error %, p50/p95 latency
-- [ ] Run Locust against the local stack; screenshot idle vs loaded; save a log excerpt from the same run
-- [ ] Write 1–2 sentences on when to use the dashboard vs the logs
+- [x] Add `prometheus/client_golang`; expose `/metrics`
+- [x] Request counter (rate), error counter, duration histogram, labelled by endpoint and status
+- [x] Gin middleware: one JSON log line per request (endpoint, status, duration)
+- [x] `docker-compose.yml` with app, Prometheus (with config) and Grafana, local only
+- [x] Grafana dashboard: panels for rate, error %, p50/p95 latency (provisioned from `observability/grafana/`)
+- [x] Run Locust against the local stack; screenshot idle vs loaded; save a log excerpt from the same run (grafana_1/2.png, part5_locust.png, docker_logs.png)
+- [x] Write 1–2 sentences on when to use the dashboard vs the logs
 
 ## Final deliverables (repo and README)
 

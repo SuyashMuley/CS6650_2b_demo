@@ -303,4 +303,69 @@ FastHttpUser gave about 12% more throughput with the same latency. The differenc
 
 ## Observability
 
-_TODO (Part V)_
+The server tracks the RED signals (Rate, Errors, Duration) for every endpoint in two ways. The Prometheus and Grafana stack runs **locally only** and is not deployed to AWS.
+
+### How it works
+- **Metrics:** a Gin middleware in `src/product-service.go` records, per request, `http_requests_total` (rate), `http_request_errors_total` (non-2xx responses) and the `http_request_duration_seconds` histogram (latency). They are exposed at `GET /metrics`. Labels use the route pattern (`/products/:productId`), not the raw URL, so the number of label values stays small.
+- **Logs:** the same middleware prints one JSON line per request to stdout: time, method, endpoint, path, status, duration in ms and client IP. It replaces Gin's default plain-text logger.
+- **Errors count every non-2xx response**, including expected 404s. The Locust mix deliberately sends about 10% requests for a missing product, so a healthy load test still shows an error rate near 10%.
+
+### Run the local stack
+```
+docker compose up --build
+# Apple Silicon (native arm64 image, avoids emulation):
+TARGET_ARCH=arm64 docker compose up --build
+```
+
+| Service | URL |
+|---|---|
+| Product API | http://localhost:8080 (metrics at `/metrics`) |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (anonymous access; open the dashboard **Product API - RED**) |
+
+The Prometheus scrape config is `observability/prometheus/prometheus.yml` (every 5 s). Grafana's data source and dashboard are provisioned from `observability/grafana/`, so no manual setup is needed. The dashboard has one panel per signal: requests per second, % non-2xx errors, and p50/p95 latency, plus a requests-per-status panel.
+
+### Generate load and capture evidence
+```
+cd locust
+LOCUST_CLIENT=fast locust -f locustfile.py -H http://localhost:8080
+```
+View the logs from the same run:
+```
+docker compose logs app | grep '^app-1  | {'
+```
+Stop everything with `docker compose down`.
+
+### Dashboard: idle vs loaded
+Locust ran against the local stack (FastHttpUser, back-to-back requests, same request mix as Part IV). The dashboard was idle until about 02:03, then loaded until about 02:06.
+
+- `screenshots/grafana_1.png`: Rate, Errors and Duration panels.
+- `screenshots/grafana_2.png`: Duration (with legend) and responses by status code.
+- `screenshots/part5_locust.png`: the Locust summary for the same run.
+- `screenshots/docker_logs.png`: the request logs.
+
+| | Idle | Loaded |
+|---|---|---|
+| Rate | 0 req/s | peak about 15.0K req/s GET and 1.67K req/s POST (Locust: 16,213 RPS at the end of the run, 2,276,850 requests, 0 failures) |
+| Errors (% non-2xx) | none (see note) | about 11%: the deliberate `GET` of a missing product returns 404 on about 10% of requests |
+| Duration, server side | none | p50 about 250 us, p95 about 475 us (see note) |
+| Duration, as seen by Locust | n/a | median 7 ms, p95 11 ms, p99 12 ms |
+
+Notes on reading the screenshots:
+- **The earlier blip.** The short bar near 01:53 (66.7% errors, a latency bump) is from a few manual `curl` requests used to check the stack. Two of those three requests were deliberate errors, which is why the percentage is so high. It is not part of the load test.
+- **The 250 us / 475 us lines are flat because of the histogram bucket resolution.** The smallest bucket is 0.5 ms and every request finished inside it, so `histogram_quantile` interpolates inside that one bucket (50% of 0.5 ms = 250 us, 95% = 475 us). The true latency is below 0.5 ms: the log lines show 0.015 to 0.45 ms, and the slowest request of the whole run was 5.8 ms. Finer buckets (for example 50 us and 100 us) would resolve it.
+- **Locust sees 7 ms and the server sees under 0.5 ms** because Locust's number includes the client side: its own processing at about 16K requests per second, the Docker network, and the load generator's CPU. It is not server time.
+- **Local vs AWS:** the local server handled about 16K RPS with a 7 ms median, against about 4K RPS and 180 ms at 1000 users on the 0.25 vCPU Fargate task. The local run has no 22 ms network round trip and uses much more CPU.
+
+### Request log excerpt (same run)
+One JSON object per request, from `docker compose logs app` during the Locust run (`screenshots/docker_logs.png` shows the same lines; the first lines in that screenshot, from 05:52, are manual test requests made before the load run):
+```
+{"time":"2026-10-14T06:02:54.444902678Z","method":"GET","endpoint":"/products/:productId","path":"/products/1","status":200,"duration_ms":0.398,"client_ip":"192.168.65.1"}
+{"time":"2026-10-14T06:02:54.445007511Z","method":"POST","endpoint":"/products/:productId/details","path":"/products/1/details","status":204,"duration_ms":0.449,"client_ip":"192.168.65.1"}
+{"time":"2026-10-14T06:02:54.445455011Z","method":"GET","endpoint":"/products/:productId","path":"/products/2","status":200,"duration_ms":0.024,"client_ip":"192.168.65.1"}
+{"time":"2026-10-14T06:02:54.445832761Z","method":"GET","endpoint":"/products/:productId","path":"/products/999999","status":404,"duration_ms":0.054,"client_ip":"192.168.65.1"}
+```
+Over the whole run the server wrote 2,276,861 lines (1,820,996 x 200, 228,214 x 204, 227,651 x 404), which matches Locust's 2,276,850 requests plus a few manual test requests.
+
+### When to use the dashboard vs the logs
+Use the **dashboard** to watch the system live: it shows that something changed (rate up, errors or latency rising) as it happens, and how the three signals move together. Use the **logs** for after-the-fact debugging when nobody had Grafana open: they keep every individual request (path, status, duration), so you can find exactly which requests failed or were slow, which an aggregated metric cannot tell you.
