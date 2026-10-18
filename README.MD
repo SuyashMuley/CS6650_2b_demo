@@ -8,9 +8,22 @@ A small in-memory Product API built with Go and Gin, implementing the Product en
 |---|---|
 | Server code | `src/product-service.go` |
 | Dockerfile | `src/Dockerfile` |
+| Terraform infrastructure | `terraform/` (`main.tf`, `provider.tf`, `variables.tf`, `outputs.tf`, `modules/`) |
+| Locust load test | `locust/locustfile.py` |
+| Local observability stack | `docker-compose.yml`, `observability/` (Prometheus config, Grafana dashboard) |
+| Screenshots (Locust, CloudWatch, Grafana, logs) | `screenshots/` |
 | API spec | `api.yaml` (assignment handout; not in this repo) |
-| Plan / progress | `plan.md` |
-| Terraform infrastructure | `terraform/` |
+
+## Submission checklist: what is in this README
+
+| Requirement | Section |
+|---|---|
+| How anyone can deploy the infrastructure on a different machine, and send requests to the API | [Deploying with Terraform](#deploying-with-terraform) |
+| An example for every server response code | [Examples for every response code](#examples-for-every-response-code) |
+| Where to find the server code, Dockerfile and infrastructure | [Where things are](#where-things-are) (above) |
+| Locust screenshots from Part IV | [Load testing](#load-testing) |
+| Grafana dashboard screenshot (idle vs loaded), log excerpt and the dashboard-vs-logs sentences | [Observability](#observability) |
+| `.gitignore` keeps `.tfstate`, `.terraform/`, `.env`, `.tfvars` and `__pycache__` out of the repo | `.gitignore` |
 
 ## Endpoints
 
@@ -274,16 +287,62 @@ Optional: `LOCUST_WAIT=1` adds 0.1-0.5 s of think time between requests (default
 | 500 | 219,183 | 3,702 | 91 ms | 190 ms | 240 ms | 471 ms | 0 |
 | 1000 | 205,750 | 4,021 | 180 ms | 370 ms | 480 ms | 1,102 ms | 0 |
 
-Screenshots: `baseline_fasthttpuser.png`, `100user_fasthttp.png`, `fasthttp_200user.png`, `fasthttp_500user.png`, `fasthttp_1000user_25rampup.png`. Each has matching `*_chart.png` / `*_chart2.png` charts. The 1000-user charts show all runs on one timeline.
+Locust statistics for each level (FastHttpUser, against the deployed ECS service):
+
+**50 users (baseline)**
+
+![Locust statistics, FastHttpUser, 50 users](screenshots/baseline_fasthttpuser.png)
+
+**100 users**
+
+![Locust statistics, FastHttpUser, 100 users](screenshots/100user_fasthttp.png)
+
+**200 users**
+
+![Locust statistics, FastHttpUser, 200 users](screenshots/fasthttp_200user.png)
+
+**500 users**
+
+![Locust statistics, FastHttpUser, 500 users](screenshots/fasthttp_500user.png)
+
+**1000 users (stress test, spawn rate 25/s)**
+
+![Locust statistics, FastHttpUser, 1000 users](screenshots/fasthttp_1000user_25rampup.png)
+
+**Charts for the whole series.** The charts show every run on one timeline: requests per second, p50/p95 response time, and number of users. The 1000-user run is the stress test.
+
+![Locust charts: RPS and response times across all runs](screenshots/fasthttp_1000user_25rampup_chart.png)
+
+![Locust charts: response times and number of users across all runs](screenshots/fasthttp_1000user_25rampup_chart2.png)
+
+<details>
+<summary>Charts captured after each earlier level</summary>
+
+![100 users, RPS and response times](screenshots/fasthttp_100user_chart.png)
+![100 users, response times and users](screenshots/fasthttp_100user_chart2.png)
+![200 users, RPS and response times](screenshots/fasthttp_200user_chart.png)
+![200 users, response times and users](screenshots/fasthttp_200user_chart2.png)
+![500 users, RPS and response times](screenshots/fasthttp_500user_chart.png)
+![500 users, response times and users](screenshots/fasthttp_500user_chart2.png)
+
+</details>
 
 ### Where the server struggled
 - Nothing failed: 0 errors up to 1000 users. The server degraded through latency, not errors.
 - The tail got worse first: going from 50 to 100 users, p95 more than doubled (31 to 69 ms) while the median barely moved.
 - From 200 to 1000 users (5x), throughput rose only 29% (3,118 to 4,021 RPS) while the median went from 56 to 180 ms. Extra users just queue.
-- **Cause: the Fargate task's CPU (0.25 vCPU).** CloudWatch `CPUUtilization` at 1-minute resolution reached 94-100% in every run from 50 users up (for example about 96% around 01:17, during the HttpUser 50-user run, and 99.7% during the 500-user run). Memory peaked at about 6% and the task count stayed at 1, so the task did not crash or restart (`ecs_memoryutilization.png`, `ecs_livetaskcount.png`).
-- Note on `ecs_cpuutilization.png`: the console graph defaults to a 5-minute average and ends before the 1000-user run, so it shows only about 41% at its peak. The short, saturated runs are averaged with idle time. The 1-minute data is what shows the plateau.
+- **Cause: the Fargate task's CPU (0.25 vCPU).** CloudWatch `CPUUtilization` at 1-minute resolution reached 94-100% in every run from 50 users up (for example about 96% around 01:17, during the HttpUser 50-user run, and 99.7% during the 500-user run). Memory peaked at about 6% and the task count stayed at 1, so the task did not crash or restart (CloudWatch screenshots below).
+- Note on the CPU screenshot below: the console graph defaults to a 5-minute average and ends before the 1000-user run, so it shows only about 41% at its peak. The short, saturated runs are averaged with idle time. The 1-minute data is what shows the plateau.
 - **Not the client:** during the 1000-user run the Locust process used about 33% of one core (Activity Monitor), so the load generator was not the limit.
 - About 22 ms of every latency is the network round trip from the laptop to AWS.
+
+CloudWatch for the ECS service (console defaults, UTC, 5-minute average):
+
+![CloudWatch ECS CPUUtilization](screenshots/ecs_cpuutilization.png)
+
+![CloudWatch ECS MemoryUtilization](screenshots/ecs_memoryutilization.png)
+
+![CloudWatch ECS LiveTaskCount](screenshots/ecs_livetaskcount.png)
 
 ### Tradeoffs
 - **Most common operation:** reads (`GET /products/{id}`). A shopper browses far more than a merchant updates products.
@@ -297,7 +356,14 @@ Screenshots: `baseline_fasthttpuser.png`, `100user_fasthttp.png`, `fasthttp_200u
 | HttpUser | 1,859 | 24 ms | 31 ms | 0 |
 | FastHttpUser | 2,077 | 23 ms | 31 ms | 0 |
 
-(`baseline_httpuser.png`, `baseline_fasthttpuser.png`)
+
+**HttpUser, 50 users**
+
+![Locust statistics, HttpUser, 50 users](screenshots/baseline_httpuser.png)
+
+**FastHttpUser, 50 users**
+
+![Locust statistics, FastHttpUser, 50 users](screenshots/baseline_fasthttpuser.png)
 
 FastHttpUser gave about 12% more throughput with the same latency. The difference is small because Locust users are closed-loop: each waits for a response before sending the next request, so throughput is about users divided by latency. Here latency is dominated by the network trip and a CPU-bound server, not by the client. `HttpUser` is built on the Python `requests` library, which does more work per call. `FastHttpUser` uses `geventhttpclient`, a lighter, faster HTTP client, so one Locust process can generate more load before its own CPU becomes the limit. We did not reach that limit at 50 users, so the gap here understates what FastHttpUser can do. The server's CPU limit mattered more than the choice of client.
 
@@ -339,11 +405,21 @@ Stop everything with `docker compose down`.
 ### Dashboard: idle vs loaded
 Locust ran against the local stack: FastHttpUser, **200 users at a spawn rate of 10/s**, back-to-back requests, same request mix as Part IV, from about 02:03 to 02:05. The dashboard was idle before that.
 
-- `screenshots/grafana_1.png`: Rate, Errors and Duration panels.
-- `screenshots/grafana_2.png`: Duration (with legend) and responses by status code.
-- `screenshots/part5_locust.png`: the Locust summary for the same run.
-- `screenshots/docker_logs.png`: the request logs.
-- `screenshots/locustlogs_part5.png`: Locust's own log for the run (shows the CPU warning described below).
+**Grafana dashboard "Product API - RED": Rate, Errors and Duration panels (idle, then loaded)**
+
+![Grafana dashboard, rate, errors and duration panels](screenshots/grafana_1.png)
+
+**Duration (with legend) and responses by status code**
+
+![Grafana dashboard, duration and status codes](screenshots/grafana_2.png)
+
+**Locust summary for the same run**
+
+![Locust statistics for the local Part V run](screenshots/part5_locust.png)
+
+**Locust's own log for the run (shows the CPU warning described below)**
+
+![Locust logs for the local Part V run](screenshots/locustlogs_part5.png)
 
 | | Idle | Loaded |
 |---|---|---|
@@ -355,18 +431,20 @@ Locust ran against the local stack: FastHttpUser, **200 users at a spawn rate of
 Notes on reading the screenshots:
 - **The earlier blip.** The short bar near 01:53 (66.7% errors, a latency bump) is from a few manual `curl` requests used to check the stack. Two of those three requests were deliberate errors, which is why the percentage is so high. It is not part of the load test.
 - **The 250 us / 475 us lines are flat because of the histogram bucket resolution.** The smallest bucket is 0.5 ms and every request finished inside it, so `histogram_quantile` interpolates inside that one bucket (50% of 0.5 ms = 250 us, 95% = 475 us). The true latency is below 0.5 ms: the log lines show 0.015 to 0.45 ms, and the slowest request of the whole run was 5.8 ms. Finer buckets (for example 50 us and 100 us) would resolve it.
-- **The load generator was the bottleneck in this run.** Locust logged `CPU usage above 90%` at 02:03:20 and `CPU usage was too high at some point during the test` at 02:05:10 (`locustlogs_part5.png`). So the 16K RPS is a floor set by one Locust process on a laptop that was also running Docker, not the server's capacity, and Locust warns that it can give inconsistent response times. The server itself was not saturated: its own durations stayed under 0.5 ms (slowest request 5.8 ms).
+- **The load generator was the bottleneck in this run.** Locust logged `CPU usage above 90%` at 02:03:20 and `CPU usage was too high at some point during the test` at 02:05:10 (Locust log screenshot above). So the 16K RPS is a floor set by one Locust process on a laptop that was also running Docker, not the server's capacity, and Locust warns that it can give inconsistent response times. The server itself was not saturated: its own durations stayed under 0.5 ms (slowest request 5.8 ms).
 - **Locust sees 7 ms and the server sees under 0.5 ms** because Locust's number includes client-side queueing at that CPU load, the Docker network and the load generator's own processing. It is not server time. Locust suggests distributing the load over several CPU cores (for example `--processes`) to remove this limit.
 - **Local vs AWS:** the local server handled at least 16K RPS (limited by Locust, see above) with a 7 ms median, against about 4K RPS and a 180 ms median at 1000 users on the 0.25 vCPU Fargate task. The local run has no 22 ms network round trip, and the Fargate task was CPU-saturated while the local server was not. The two runs used different user counts (200 local, 50 to 1000 on AWS), so they are not a like-for-like comparison.
 
 ### Request log excerpt (same run)
-One JSON object per request, from `docker compose logs app` during the Locust run (`screenshots/docker_logs.png` shows the same lines; the first lines in that screenshot, from 05:52, are manual test requests made before the load run):
+One JSON object per request, from `docker compose logs app` during the Locust run (the screenshot below shows the same lines; the first lines in it, from 05:52, are manual test requests made before the load run):
 ```
 {"time":"2026-10-14T06:02:54.444902678Z","method":"GET","endpoint":"/products/:productId","path":"/products/1","status":200,"duration_ms":0.398,"client_ip":"192.168.65.1"}
 {"time":"2026-10-14T06:02:54.445007511Z","method":"POST","endpoint":"/products/:productId/details","path":"/products/1/details","status":204,"duration_ms":0.449,"client_ip":"192.168.65.1"}
 {"time":"2026-10-14T06:02:54.445455011Z","method":"GET","endpoint":"/products/:productId","path":"/products/2","status":200,"duration_ms":0.024,"client_ip":"192.168.65.1"}
 {"time":"2026-10-14T06:02:54.445832761Z","method":"GET","endpoint":"/products/:productId","path":"/products/999999","status":404,"duration_ms":0.054,"client_ip":"192.168.65.1"}
 ```
+![Request logs from docker compose](screenshots/docker_logs.png)
+
 Over the whole run the server wrote 2,276,861 lines (1,820,996 x 200, 228,214 x 204, 227,651 x 404), which matches Locust's 2,276,850 requests plus a few manual test requests.
 
 ### When to use the dashboard vs the logs
